@@ -1,0 +1,141 @@
+import pandas as pd
+import pymysql
+import sys ,re
+from sqlalchemy import create_engine
+import sqlalchemy
+pymysql.install_as_MySQLdb()
+import Read_Excel_All_Types as rd
+import openpyxl
+from datetime import datetime
+
+today = datetime.now().strftime("%m%d%Y,%H")
+
+
+def column_rename(x):
+    y = '['+ str(x)+']'
+    return y
+
+def column_dtype(df):
+    dtypedict = {}
+    for i, j in zip(df.columns, df.dtypes):
+        if "object" in str(j):
+            dtypedict.update({i: sqlalchemy.types.NVARCHAR(length=255)})
+
+        if "datetime" in str(j):
+            dtypedict.update({i: sqlalchemy.types.DateTime()})
+
+        if "float" in str(j):
+            dtypedict.update({i: sqlalchemy.types.Float(precision=4, asdecimal=True)})
+
+        if "int" in str(j):
+            dtypedict.update({i: sqlalchemy.types.BIGINT()})
+
+        if "商品型号" in str(i):
+            dtypedict.update({i: sqlalchemy.types.NVARCHAR(length=255)})
+
+        if "串码" in str(i):
+            dtypedict.update({i: sqlalchemy.types.TEXT})
+
+    return dtypedict
+
+def Connect_MySQL():
+    try:
+        conn = pymysql.connect(host='localhost', user='root', password = 'zlaw2018',
+                          database = 'hqsi', charset='utf8mb4', use_unicode=True)
+
+        engine = create_engine("mysql+mysqldb://root:zlaw2018@localhost:3306/hqsi?charset=utf8mb4")
+
+        print('''
+        MySQL connected successfully
+         ''')
+        cur = conn.cursor()
+
+        return conn, engine, cur
+    except pymysql.err.OperationalError as e:
+        print('Error is' + str(e))
+    sys.exit()
+
+def Excel_Append_Table():
+    datalist = rd.GetData()
+    while True:
+        table_name = input('Input Table Name:')
+        if len(table_name) < 5:
+            print('Bad Name')
+        else:
+            for df in datalist:
+                df.rename(columns=lambda c: re.sub(r"[:)(#,，.]", '', c), inplace= True)
+                df.rename(columns=lambda c: re.sub(r"[ -]", '_', c), inplace= True)
+                pd.io.sql.to_sql(df, table_name, con=engine, if_exists='append', index=False,
+                                 dtype = column_dtype(df))
+                print('Append Successfully')
+            break
+
+def Use_Sql():
+    while True:
+        with conn:
+            sql_to_excute = input('sql>>>')
+            if sql_to_excute:
+                try:
+                    cur.execute(sql_to_excute + '')
+                    rows = cur.fetchall()
+                    for row in rows:
+                        print(row)
+                except:
+                    print('error')
+                    pass
+            else:
+                break
+
+def Export_to_Excel():
+    cur.execute('show tables;')
+    rows = cur.fetchall()
+    for row in rows:
+        print(row)
+    Table_to_Export = input('Input the table name to Export: ')
+    # try:
+    sql = 'select * from %s' % Table_to_Export
+    dfexport = pd.read_sql(sql, con=conn)
+    print(dfexport.head(1))
+    dfexport.to_excel(r'C:\Users\zhangj17\Desktop\output-%s.xlsx' % today, 'sheet1', index=False)
+    print('Export to Excel Successfully')
+    # except:
+    #     print('Error')
+    # writer = pd.ExcelWriter(r'C:\Users\zhangj17\Desktop\output.xlsx')
+
+def read_MySql(Table_Name, index = None):
+
+    global conn, engine, cur
+    conn, engine, cur = Connect_MySQL()
+    df = pd.read_sql('select * from %s' % Table_Name, conn, index_col= index)
+
+    return df
+
+
+
+def Operating():
+    global conn, engine, cur
+    conn, engine, cur = Connect_MySQL()
+    while True:
+        print("""
+        1. Append Excel data to MySql table;
+        2. Use MySql to Excute;
+        3. Export MySql Table as Excel;
+        9. Quit.
+        """)
+        Choice = int(input('Option: '))
+        if Choice == 1:
+            Excel_Append_Table()
+
+        elif Choice == 2:
+            Use_Sql()
+
+        elif Choice == 3:
+            Export_to_Excel()
+
+        elif Choice == 9:
+            break
+        else:
+            continue
+
+
+# Operating()
