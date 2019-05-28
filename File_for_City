@@ -1,0 +1,9 @@
+import CityMapping
+import ConnMySQL
+import pandas as pd
+city_hierarchy_GD_Master = ConnMySQL.read_MySql('city_hierarchy_0426')
+
+HPK_stores = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2.City_Store\美赞臣京东门店(原始无过滤)2019-05-21.xlsx')
+HPK_stores = CityMapping.find_city(HPK_stores)
+HPK_stores = HPK_stores.set_index('City_ID').join(city_hierarchy_GD_Master.set_index('ID'),  rsuffix='_jd')
+HPK_stores.to_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2.City_Store\History\美赞臣京东门店(原始无过滤).xlsx')
