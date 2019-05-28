@@ -1,0 +1,215 @@
+import ConnMySQL
+import numpy as np
+import pandas as pd
+import re
+from datetime import datetime, timedelta
+pd.options.mode.chained_assignment = None
+import AutoEmail
+
+today = (datetime.now()-timedelta(days=1)).strftime("%Y%m%d")
+thismonth = datetime.now().strftime("%Y%m")
+hpk_sku_code_transfer = ConnMySQL.read_MySql('hpk_sku_code_transfer')
+go_deep_price = ConnMySQL.read_MySql('go_deep_price')
+city_hierarchy_0426 = ConnMySQL.read_MySql('city_hierarchy_0426')
+
+go_deep_price = go_deep_price[['SKU_Code', 'Month', 'Price']]
+go_deep_price['ID'] = go_deep_price['SKU_Code'].astype(str) + '-' + go_deep_price['Month'].astype(str)
+go_deep_price = go_deep_price[['ID', 'Price']]
+
+city_hierarchy = city_hierarchy_0426[['GD_开发城市', 'Region', 'Sub_Region', 'Area', 'Sales_City', '销售城市']]
+
+Product_master = pd.read_excel(r'C:\Users\zhangj17\Desktop\New Product\Data\Import\产品主数据报表.xlsx')
+Product_master = Product_master[['内部产品代码', 'Product Line', '产品线名称', 'Product Name', '产品名称', '阶段']]
+Product_master.columns = ['内部产品代码', 'Product Line(EN)', 'Product Line(CN)',
+                          'MaterialName (EN)', 'MaterialName (CN)', 'Stage']
+
+
+# 日期格式转换
+def convert_to_month(time):
+    return time.strftime("%Y%m")
+
+def convert_to_day(time):
+    return int(time.strftime("%d"))
+
+
+HPK_Order_Raw = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\HPK\Import\H.xls')
+
+HPK_Order = HPK_Order_Raw[['订单编号', '商品编号', '商品名称', '供应商商品编码', '规格数', '商品数量', '件数',
+       '生产日期', '规格价', '打包费', '运费', '总金额', '下单时间', '支付时间', '受理时间',
+       '收货人姓名', '收货人电话', '省份', '市', '区/县', '收货地址', '订单备注', '退款状态',
+       '门店名称', '门店编号', '门店省']]
+
+if not HPK_Order[HPK_Order['规格数'] != '6罐装'].empty:
+    print(HPK_Order[HPK_Order['规格数']!='6罐装'])
+    raise Exception('Other Case Size found, Pls check')
+
+
+HPK_Order_Lean = HPK_Order_Raw[['商品名称', '供应商商品编码', '件数', '受理时间',
+                                '省份', '市', '区/县', '退款状态','收货地址']]
+
+HPK_Order_Lean.dropna(subset=['受理时间'], inplace=True)
+HPK_Order_Lean['受理时间'] = pd.to_datetime(HPK_Order_Lean['受理时间'])
+HPK_Order_Lean = HPK_Order_Lean[HPK_Order_Lean['受理时间'] < datetime(datetime.now().year, datetime.now().month, datetime.now().day)]
+
+HPK_Order_Lean['Day'] = HPK_Order_Lean['受理时间'].apply(convert_to_day)
+HPK_Order_Lean['Month'] = HPK_Order_Lean['受理时间'].apply(convert_to_month)
+
+HPK_Order_Lean = HPK_Order_Lean[HPK_Order_Lean['Month'] == thismonth]
+HPK_Order_Lean = HPK_Order_Lean[~HPK_Order_Lean['退款状态'].isin(['退款关闭', '全额退款完成', '退款中'])]
+HPK_Order_Lean = HPK_Order_Lean.set_index('供应商商品编码').join(hpk_sku_code_transfer.set_index('HPK编码'))
+HPK_Order_Lean.reset_index(drop=False, inplace=True)
+HPK_Order_Lean['ID'] = HPK_Order_Lean['MJN_SKU_Code'].astype(str) + '-'+ HPK_Order_Lean['Month'].astype(str)
+HPK_Order_Lean = HPK_Order_Lean.set_index('ID').join(go_deep_price.set_index('ID'))
+
+if not HPK_Order_Lean[~(HPK_Order_Lean['Price'] > 300)].empty:
+    print(HPK_Order_Lean[~(HPK_Order_Lean['Price'] > 300)])
+    raise Exception('New SKU found and cannot find price, Pls check')
+
+HPK_IMS = HPK_Order_Lean[['MJN_SKU_Code', '件数', 'Day', 'Price', '省份', '市', '区/县', '收货地址']]
+HPK_IMS['IMS'] = HPK_IMS['Price']/1000 * HPK_IMS['件数']
+
+HPK_IMS = pd.pivot_table(HPK_IMS, values='IMS', index=['收货地址', '市', '区/县','MJN_SKU_Code'],
+                         columns=['Day'], aggfunc=np.sum)
+
+HPK_IMS.reset_index(drop=False, inplace=True)
+
+HPK_IMS_part1 = HPK_IMS[HPK_IMS['区/县'].isin(list(city_hierarchy['GD_开发城市']))]
+HPK_IMS_part2 = HPK_IMS[~HPK_IMS['区/县'].isin(list(city_hierarchy['GD_开发城市']))]
+
+HPK_IMS_part1 = HPK_IMS_part1.set_index('区/县').join(city_hierarchy.set_index('GD_开发城市'))
+HPK_IMS_part2 = HPK_IMS_part2.set_index('市').join(city_hierarchy.set_index('GD_开发城市'))
+
+HPK_IMS = HPK_IMS_part1.append(HPK_IMS_part2, ignore_index=True)
+HPK_IMS.drop(columns=['区/县', '市'], inplace=True)
+
+HPK_IMS['Outlet No'] = ''
+HPK_IMS['Outlet Type(EN)'] = 'Go Deep'
+HPK_IMS['Outlet Type(CN)'] = 'Go Deep'
+HPK_IMS['Outlet Type 3 (EN)'] = 'Go Deep'
+HPK_IMS['Account'] = '海拍客'
+HPK_IMS['Distributor Region'] = HPK_IMS['Region']
+HPK_IMS['Distributor Sub Region'] = HPK_IMS['Sub_Region']
+HPK_IMS['Distributor Area'] = HPK_IMS['Area']
+HPK_IMS['Distributor ID'] = '0010000025'
+HPK_IMS['Distributor Name'] = '杭州洋驼网络科技有限公司'
+
+def add_zero(code):
+    return '0' * (18-len(str(code)))+str(code)
+
+
+HPK_IMS['Material NO'] = HPK_IMS['MJN_SKU_Code'].apply(add_zero)
+HPK_IMS = HPK_IMS.set_index('MJN_SKU_Code').join(Product_master.set_index('内部产品代码'))
+
+L_HPK = list(HPK_IMS.columns)
+
+L_HPK1 = ['Distributor Region', 'Distributor Sub Region', 'Distributor Area', 'Distributor ID', 'Distributor Name',
+      'Region','Sub_Region','Area','Sales_City','销售城市','Outlet No','收货地址','Outlet Type(EN)',
+      'Outlet Type(CN)','Outlet Type 3 (EN)','Account','Product Line(EN)','Product Line(CN)',
+      'Material NO','MaterialName (EN)','MaterialName (CN)','Stage']
+
+L_HPK2 = [i for i in L_HPK if i not in L_HPK1]
+L_HPK4 = [i for i in range(1, 32)]
+print(L_HPK2)
+L_HPK3 = L_HPK1 + L_HPK2
+L_HPK_standard = L_HPK1 + L_HPK4
+print(L_HPK3)
+HPK_IMS = HPK_IMS[L_HPK3]
+
+Headings = pd.DataFrame(columns=L_HPK_standard)
+HPK_IMS = Headings.append(HPK_IMS, sort=False)
+HPK_IMS.reset_index(drop=True, inplace=True)
+
+
+
+#
+
+JD_Unmapping = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\JD\Import\JD Unmapping outlet IMS By Day.xlsx',
+                             skiprows=[0,1,2,3,4], dtype={'Distributor ID': str, 'Material NO': str})
+
+
+def find_JD_ID(ID):
+    i = ID.find('~')
+    return ID[i+1:]
+
+
+JD_Unmapping['Outlet ID'] = JD_Unmapping['id'].apply(find_JD_ID).astype(int)
+JD_Unmapping.drop(columns=["Unnamed: 0",'Distributor Region','Distributor Sub Region',
+                           'Distributor Area','Outlet No','id'], inplace=True)
+
+columns_name_list = JD_Unmapping.columns
+columns_new_name = []
+for i in columns_name_list:
+    if type(i) == datetime:
+        i = i.day
+        columns_new_name.append(i)
+    else:
+        columns_new_name.append(i)
+
+JD_Unmapping.columns = columns_new_name
+
+#获取下单门店信息
+jd_go_exceed = ConnMySQL.read_MySql('jd_go_deep_orders')
+jd_go_exceed_LastMonth = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\JD\JD Raw Data\基板商家视角采购订单明细表_last.xlsx')
+jd_go_exceed_MTD = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\JD\JD Raw Data\基板商家视角采购订单明细表.xlsx')
+jd_go_exceed = jd_go_exceed.append(jd_go_exceed_LastMonth).append(jd_go_exceed_MTD)
+
+# jd_go_exceed.to_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\JD full raw data.xlsx')
+jd_stores = jd_go_exceed.groupby(['店铺ID', '店铺名称','门店一级地址' ,'门店二级地址', '门店三级地址'], as_index=False)['应付金额'].sum()
+jd_stores.drop_duplicates(subset=['店铺ID'], inplace=True)
+jd_stores['门店一级地址'] = jd_stores['门店一级地址']+'市'
+
+jd_stores_part1 = jd_stores[jd_stores['门店三级地址'].isin(list(city_hierarchy['GD_开发城市']))]
+jd_stores_part2 = jd_stores[~jd_stores['门店三级地址'].isin(list(city_hierarchy['GD_开发城市']))]
+jd_stores_part3 = jd_stores_part2[jd_stores['门店二级地址'].isin(list(city_hierarchy['GD_开发城市']))]
+jd_stores_part4 = jd_stores_part2[~jd_stores['门店二级地址'].isin(list(city_hierarchy['GD_开发城市']))]
+
+jd_stores_part1 = jd_stores_part1.set_index('门店三级地址').join(city_hierarchy.set_index('GD_开发城市'))
+jd_stores_part2 = jd_stores_part3.set_index('门店二级地址').join(city_hierarchy.set_index('GD_开发城市'))
+jd_stores_part3 = jd_stores_part4.set_index('门店一级地址').join(city_hierarchy.set_index('GD_开发城市'))
+
+jd_stores = jd_stores_part1.append(jd_stores_part2, ignore_index=True).append(jd_stores_part3, ignore_index=True)
+jd_stores.drop(columns=['应付金额','门店一级地址','门店二级地址','门店三级地址'], inplace=True)
+
+JD_Unmapping = JD_Unmapping.set_index('Outlet ID').join(jd_stores.set_index('店铺ID'))
+JD_Unmapping['Outlet ID'] = JD_Unmapping.index
+
+JD_Unmapping['Outlet Type(EN)'] = 'Go Deep'
+JD_Unmapping['Outlet Type(CN)'] = 'Go Deep'
+JD_Unmapping['Outlet Type 3 (EN)'] = 'Go Deep'
+JD_Unmapping['Account'] = '京东'
+JD_Unmapping['Distributor Region'] = JD_Unmapping['Region']
+JD_Unmapping['Distributor Sub Region'] = JD_Unmapping['Sub_Region']
+JD_Unmapping['Distributor Area'] = JD_Unmapping['Area']
+
+
+L_JD = list(JD_Unmapping.columns)
+
+L_JD1 = ['Distributor Region', 'Distributor Sub Region', 'Distributor Area', 'Distributor ID', 'Distributor Name',
+      'Region','Sub_Region','Area','Sales_City','销售城市','Outlet ID','店铺名称','Outlet Type(EN)',
+      'Outlet Type(CN)','Outlet Type 3 (EN)','Account','Product Line(EN)','Product Line(CN)',
+      'Material NO','MaterialName (EN)','MaterialName (CN)','Stage']
+
+L_JD2 = [i for i in L_JD if i not in L_JD1]
+L_JD4 = [i for i in range(1, 32)]
+print(L_JD2)
+L_JD3 = L_JD1 + L_JD2
+L_JD_standard = L_JD1 + L_JD4
+print(L_JD3)
+JD_Unmapping= JD_Unmapping[L_JD3]
+JD_Headings = pd.DataFrame(columns=L_JD_standard)
+JD_Unmapping= JD_Headings.append(JD_Unmapping, sort=False)
+JD_Unmapping.reset_index(drop=True, inplace=True)
+JD_Unmapping.columns = L_HPK_standard
+
+Go_Deep_Daily_IMS = JD_Unmapping.append(HPK_IMS, ignore_index=True)
+lst = list(Go_Deep_Daily_IMS.columns)
+Go_Deep_Daily_IMS.columns = [str(i) for i in lst]
+Go_Deep_Daily_IMS[datetime.now().strftime('%d')] == ''
+
+Output_Path = r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\Go_Deep_Daily_IMS_JD_Unmapping plus HPK %s.xlsx' % today
+Go_Deep_Daily_IMS.to_excel(Output_Path)
+
+AutoEmail.SendEmail(Output_Path)
+
+# JD_Unmapping.to_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\2. IMS\JD\Import\test1.xlsx')
+
