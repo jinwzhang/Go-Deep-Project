@@ -1,0 +1,103 @@
+import ConnMySQL
+import numpy as np
+import pandas as pd
+import re
+
+city_hierarchy = ConnMySQL.read_MySql('city_hierarchy_0426')
+
+
+# 根据上级城市修正下级Target City
+Target_City_Table = city_hierarchy[['GD_开发城市', '2019_城市开发计划更新3/27']]
+Target_City_Table = Target_City_Table[Target_City_Table['2019_城市开发计划更新3/27'] == 1]
+Target_City = list(Target_City_Table['GD_开发城市'])
+
+for i, city in zip(city_hierarchy['ID'], city_hierarchy['地级单位_销售城市']):
+    if city in Target_City:
+        city_hierarchy.at[i, '2019_城市开发计划更新3/27'] = 1
+
+#更改直辖市
+for i, province, city in zip(city_hierarchy['ID'],city_hierarchy['省份'],city_hierarchy['地级单位_销售城市']):
+    if province == city:
+        city_hierarchy.at[i, '地级单位_销售城市'] = ''
+
+
+#基础引用方程
+def char_len(char):
+    char_length = len(char)
+    return char_length
+
+def len_city_test(city):
+    if len(city) > 4:
+        return '('+city[:2]+').*'
+    elif str(city).endswith('街道'):
+        return '('+city[:2]+').*'
+    else:
+        return '('+city[:len(city)-1]+').*'
+
+
+
+province_hierarchy = city_hierarchy.drop_duplicates(subset='省份')
+
+def province_mapping(long_address):
+    for province, reg in zip(province_hierarchy['省份'],'^('+province_hierarchy['省份'].str[:2]+').*'):
+        test = re.findall(reg, long_address)
+        if test:
+            return province
+
+
+# 生成正则表达式
+city_hierarchy['Nielson_city'] = np.where(city_hierarchy['地级单位_销售城市'] == city_hierarchy['GD_开发城市'], '', city_hierarchy['GD_开发城市'].apply(len_city_test))
+city_hierarchy['for_RE'] = ( '(' + city_hierarchy['地级单位_销售城市'].str[:2] + ').*'+
+                                city_hierarchy['Nielson_city'])
+city_hierarchy['char_len'] = city_hierarchy['for_RE'].apply(char_len)
+# city_hierarchy.sort_values(['char_len'], ascending=False, inplace=True, na_position='last')
+city_hierarchy['identifier'] = city_hierarchy['for_RE'].apply(lambda x: x.count('*'))
+city_hierarchy.set_index('ID')
+# city_hierarchy.to_excel(r'C:\Users\zhangj17\Desktop\Go Deep\Go_Exceed_Mapping_Table.xlsx')
+#修改重庆市特例
+for i, city in zip(city_hierarchy['ID'], city_hierarchy['GD_开发城市']):
+    if city in ['重庆市','北京市','上海市','武汉市']:
+        city_hierarchy.at[i, 'char_len'] = 6
+city_hierarchy.to_excel(r'C:\Users\zhangj17\Desktop\Go Deep\Go_Exceed_Mapping_Table.xlsx')
+
+def city_hierarchy_by_province(long_address):
+    province = province_mapping(long_address)
+    city_hierarchy_narrow_down_by_province = city_hierarchy[city_hierarchy['省份'] == province]
+    return city_hierarchy_narrow_down_by_province
+
+def re_test_greedy(long_address):
+    city_hierarchy_narrow_down_by_province = city_hierarchy_by_province(long_address)
+    city_hierarchy_narrow_down_by_province1 = city_hierarchy_narrow_down_by_province[city_hierarchy_narrow_down_by_province['char_len'] >= 10]
+    for i, reg in zip(city_hierarchy_narrow_down_by_province1['ID'], city_hierarchy_narrow_down_by_province1['for_RE'] ):
+        test = re.findall(reg, long_address)
+        if test:
+            print(test, i)
+            return i
+
+def re_test_base(long_address):
+    city_hierarchy_narrow_down_by_province = city_hierarchy_by_province(long_address)
+    city_hierarchy_narrow_down_by_province0 = city_hierarchy_narrow_down_by_province[city_hierarchy_narrow_down_by_province['char_len'] < 10]
+    for i, reg in zip(city_hierarchy_narrow_down_by_province0['ID'], city_hierarchy_narrow_down_by_province0['for_RE'] ):
+        test = re.findall(reg, long_address)
+        if test:
+            print(test, i)
+            return i
+
+def find_city(data_file):
+    # data_file = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\Go_Exceed_Raw.xlsx')
+    # data_file.drop_duplicates(subset='门店地址', inplace=True)
+    data_file = data_file
+    data_file['City_ID'] = data_file['门店地址_jd'].apply(re_test_greedy)
+
+    data_file1 = data_file[data_file['City_ID'] >= 0]
+    data_file2 = data_file[(data_file['City_ID'].isnull())]
+
+    data_file2['City_ID'] = data_file2['门店地址_jd'].apply(re_test_base)
+    data_file = data_file1.append(data_file2)
+    data_file.reset_index(drop=True, inplace=True)
+    return data_file
+
+
+# data_file = pd.read_excel(r'C:\Users\zhangj17\OneDrive - RB\Desktop\Go Deep\Go_Exceed_Raw.xlsx')
+#
+# find_city(data_file)
